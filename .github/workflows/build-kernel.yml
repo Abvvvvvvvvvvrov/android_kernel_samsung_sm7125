@@ -71,8 +71,8 @@ jobs:
       - name: Integrate KernelSU-Next
         if: ${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}
         run: |
-          echo "::notice::Integrating KernelSU-Next (branch next-susfs)..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
+          echo "::notice::Integrating KernelSU-Next (branch legacy for 4.14)..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Integrate SuSFS (v1.4.2 for kernel-4.14)
         if: ${{ github.event_name == 'push' || github.event.inputs.susfs_enabled == 'true' }}
@@ -83,8 +83,13 @@ jobs:
           cp -f susfs/kernel_patches/include/linux/susfs.h include/linux/
           [ -f susfs/kernel_patches/include/linux/susfs_def.h ] && cp -f susfs/kernel_patches/include/linux/susfs_def.h include/linux/ || true
           patch -p1 --forward < susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || {
-            echo "::warning::Patch applied with warnings or already applied."
+            echo "::warning::Kernel patch applied with warnings or already applied."
           }
+          if [ -f susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+            echo "::notice::Applying SuSFS patch to KernelSU..."
+            (cd drivers/kernelsu 2>/dev/null || cd KernelSU 2>/dev/null || true) && \
+            patch -p1 --forward < $GITHUB_WORKSPACE/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          fi
 
       - name: Configure Defconfig & Disable Module Security Checks
         run: |
