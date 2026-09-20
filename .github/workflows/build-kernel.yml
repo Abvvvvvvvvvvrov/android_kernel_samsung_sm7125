@@ -1,0 +1,208 @@
+name: Build Kernel (Galaxy A52 4G - a52q)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_enabled:
+        description: 'Integrate KernelSU-Next'
+        required: true
+        type: boolean
+        default: true
+      susfs_enabled:
+        description: 'Apply SuSFS (Kernel-level root hiding for 4.14)'
+        required: true
+        type: boolean
+        default: true
+      toolchain:
+        description: 'Compiler Toolchain'
+        required: true
+        type: choice
+        options:
+          - proton-clang
+          - aosp-clang-r450784e
+        default: proton-clang
+  push:
+    branches:
+      - lineage-23.2
+      - main
+      - master
+    paths-ignore:
+      - 'README.md'
+      - '.gitignore'
+
+jobs:
+  build:
+    name: Compile Kernel for Samsung A52 4G (a52q)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            git zip curl wget python3 python2 rsync cpio llvm lld
+
+      - name: Setup Compiler Toolchain
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain
+          cd $GITHUB_WORKSPACE/toolchain
+          if [ "${{ github.event.inputs.toolchain || 'proton-clang' }}" = "proton-clang" ]; then
+            echo "::notice::Cloning Proton Clang (LLVM 13+)..."
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          else
+            echo "::notice::Downloading Google AOSP Clang (r450784e)..."
+            mkdir -p clang
+            wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
+            tar -C clang/ -xzf clang-r450784e.tar.gz
+            rm -f clang-r450784e.tar.gz
+          fi
+
+      - name: Integrate KernelSU-Next
+        if: ${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}
+        run: |
+          echo "::notice::Integrating KernelSU-Next (branch next-susfs)..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
+
+      - name: Integrate SuSFS (v1.4.2 for kernel-4.14)
+        if: ${{ github.event_name == 'push' || github.event.inputs.susfs_enabled == 'true' }}
+        run: |
+          echo "::notice::Applying SuSFS 4.14 kernel patches..."
+          git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          cp -f susfs/kernel_patches/fs/susfs.c fs/
+          cp -f susfs/kernel_patches/include/linux/susfs.h include/linux/
+          [ -f susfs/kernel_patches/include/linux/susfs_def.h ] && cp -f susfs/kernel_patches/include/linux/susfs_def.h include/linux/ || true
+          patch -p1 --forward < susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || {
+            echo "::warning::Patch applied with warnings or already applied."
+          }
+
+      - name: Configure Defconfig & Disable Module Security Checks
+        run: |
+          DEFCONFIG="arch/arm64/configs/vendor/lineage-a52q_defconfig"
+          echo "::notice::Disabling module signature verification and enabling force loading in $DEFCONFIG..."
+
+          # Disable module signatures & enforcement
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_FORCE
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_ALL
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA1
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA224
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA256
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA384
+          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA512
+          scripts/config --file "$DEFCONFIG" --set-str MODULE_SIG_HASH ""
+          scripts/config --file "$DEFCONFIG" --set-str MODULE_SIG_KEY ""
+
+          # Enable module force loading/unloading
+          scripts/config --file "$DEFCONFIG" --enable MODULE_FORCE_LOAD
+          scripts/config --file "$DEFCONFIG" --enable MODULE_FORCE_UNLOAD
+
+          # Enable KPROBES for KernelSU and tracing
+          scripts/config --file "$DEFCONFIG" --enable KPROBES
+          scripts/config --file "$DEFCONFIG" --enable KPROBE_EVENTS
+          scripts/config --file "$DEFCONFIG" --enable HAVE_KPROBES
+
+          # Disable Samsung security & perf restrictions
+          scripts/config --file "$DEFCONFIG" --disable SECURITY_DEFEX
+          scripts/config --file "$DEFCONFIG" --disable UH_RKP
+          scripts/config --file "$DEFCONFIG" --disable SECURITY_PERF_EVENTS_RESTRICT
+          scripts/config --file "$DEFCONFIG" --enable DISABLE_LOCKSCREEN_USB_RESTRICTION
+
+          # SuSFS configs
+          scripts/config --file "$DEFCONFIG" --enable KSU
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_HAS_MAGIC_MOUNT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_PATH
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_MOUNT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_KSTAT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_OVERLAYFS
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_TRY_UMOUNT
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SPOOF_UNAME
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_ENABLE_LOG
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_OPEN_REDIRECT
+          scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
+
+      - name: Build Kernel (Image.gz-dtb)
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          echo "::notice::Generating .config..."
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            vendor/lineage-a52q_defconfig
+
+          echo "::notice::Compiling Kernel Image.gz-dtb and dtbs..."
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            Image.gz-dtb dtbs
+
+      - name: Package into AnyKernel3 Flashable ZIP
+        run: |
+          echo "::notice::Setting up AnyKernel3..."
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+
+          # Configure anykernel.sh for Samsung Galaxy A52 4G (a52q)
+          sed -i 's/device.name1=.*/device.name1=a52q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=a52/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=.*/device.name3=SM-A525F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name4=.*/device.name4=SM-A525M/g' AnyKernel3/anykernel.sh
+          sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' AnyKernel3/anykernel.sh
+          sed -i 's/is_slot_device=.*/is_slot_device=0;/g' AnyKernel3/anykernel.sh
+
+          # Copy output kernel image
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Found Image.gz-dtb"
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            echo "Found Image.gz"
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            echo "Found Image"
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
+          else
+            echo "::error::No kernel image found in out/arch/arm64/boot/"
+            exit 1
+          fi
+
+          # Copy dtbo if available
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img || true
+
+          # Create flashable ZIP
+          cd AnyKernel3
+          ZIP_NAME="AnyKernel3-a52q-KernelSU-Next-SuSFS-$(date +'%Y%m%d_%H%M').zip"
+          zip -r9 "../$ZIP_NAME" * -x .git README.md *placeholder
+          cd ..
+
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "::notice::Packaged flashable zip: $ZIP_NAME"
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error

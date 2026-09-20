@@ -10,6 +10,8 @@
 # Normal rules (sorted alphabetically)
 #
 .*
+!.github/
+!.github/**
 *.a
 *.bz2
 *.c.[012]*.*
