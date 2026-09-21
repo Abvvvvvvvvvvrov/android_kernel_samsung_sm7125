@@ -55,16 +55,36 @@ jobs:
           # Era-appropriate clang for 4.14 (Google's 4.14/4.19 build clang).
           # proton-clang HEAD moves fast and regularly breaks 4.14 codegen,
           # which on a52q shows up as "boots to UI, hangs forever".
-          if [ "${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}" = "proton-clang" ]; then
+          TOOLCHAIN_CHOICE="${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}"
+          if [ "$TOOLCHAIN_CHOICE" = "proton-clang" ]; then
             echo "::notice::Cloning Proton Clang (LLVM 13+)..."
             git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
           else
-            echo "::notice::Downloading Google AOSP Clang (r450784e)..."
-            mkdir -p clang
-            wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
-            tar -C clang/ -xzf clang-r450784e.tar.gz
+            echo "::notice::Fetching AOSP Clang r450784e..."
+            R450_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r450784e.tar.gz"
+            GOT_CLANG=0
+            for i in 1 2 3; do
+              rm -f clang-r450784e.tar.gz
+              if wget --tries=2 --timeout=60 -O clang-r450784e.tar.gz "$R450_URL" && [ "$(stat -c%s clang-r450784e.tar.gz)" -gt 100000000 ]; then
+                mkdir -p clang
+                if tar -C clang/ -xzf clang-r450784e.tar.gz && test -x clang/bin/clang; then
+                  GOT_CLANG=1
+                  break
+                fi
+                rm -rf clang
+              fi
+              echo "::warning::r450784e tarball attempt $i failed, retrying..."
+              sleep 5
+            done
             rm -f clang-r450784e.tar.gz
+            if [ "$GOT_CLANG" = "0" ]; then
+              echo "::warning::r450784e tarball unusable, falling back to LineageOS clang-r416183b mirror..."
+              rm -rf clang
+              git clone --depth=1 --branch lineage-20.0 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang
+            fi
           fi
+          test -x clang/bin/clang || { echo "::error::No working clang toolchain"; exit 1; }
+          clang/bin/clang --version | head -n 1
 
       - name: Integrate KernelSU-Next
         if: ${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}
