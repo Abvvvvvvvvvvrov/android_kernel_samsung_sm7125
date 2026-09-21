@@ -77,6 +77,14 @@ jobs:
             sed -i 's/get_monotonic_boottime(&ts)/ktime_get_boottime_ts64(\&ts)/g' drivers/kernelsu/sulog/event.c
           fi
 
+          echo "::notice::Ensuring path_umount is available before compilation..."
+          if ! grep -q "int path_umount" fs/namespace.c; then
+            sed -i '/^static bool is_mnt_ns_file/i static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (flags & MNT_LOCKED) {\n\t\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\t\treturn -EINVAL;\n\t}\n\treturn 0;\n}\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\nEXPORT_SYMBOL(path_umount);\n' fs/namespace.c
+          fi
+          if ! grep -q "int path_umount" fs/internal.h; then
+            sed -i '/^extern void __init mnt_init/a extern int path_umount(struct path *path, int flags);' fs/internal.h
+          fi
+
       - name: Configure Defconfig & Disable Module Security Checks
         run: |
           DEFCONFIG="arch/arm64/configs/vendor/lineage-a52q_defconfig"
