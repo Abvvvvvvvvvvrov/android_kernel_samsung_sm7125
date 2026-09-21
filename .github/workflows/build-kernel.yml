@@ -155,12 +155,17 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
 
           # Configure anykernel.sh for Samsung Galaxy A52 4G (a52q)
+          sed -i 's/kernel.string=.*/kernel.string=KernelSU-Next for Samsung Galaxy A52 4G (a52q)/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name1=.*/device.name1=a52q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=.*/device.name2=a52/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name3=.*/device.name3=SM-A525F/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name4=.*/device.name4=SM-A525M/g' AnyKernel3/anykernel.sh
-          sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' AnyKernel3/anykernel.sh
-          sed -i 's/is_slot_device=.*/is_slot_device=0;/g' AnyKernel3/anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' AnyKernel3/anykernel.sh
+          # Remove example tuna patches from anykernel.sh
+          sed -i '/# init.rc/,/# fstab.tuna/d' AnyKernel3/anykernel.sh
+          sed -i '/append_file init.tuna.rc/d' AnyKernel3/anykernel.sh
+          sed -i '/append_file fstab.tuna/d' AnyKernel3/anykernel.sh
 
           # Copy output kernel image
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
