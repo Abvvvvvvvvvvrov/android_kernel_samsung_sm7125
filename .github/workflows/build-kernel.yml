@@ -13,9 +13,9 @@ on:
         required: true
         type: choice
         options:
-          - proton-clang
           - aosp-clang-r450784e
-        default: proton-clang
+          - proton-clang
+        default: aosp-clang-r450784e
   push:
     branches:
       - lineage-23.2
@@ -52,7 +52,10 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
           cd $GITHUB_WORKSPACE/toolchain
-          if [ "${{ github.event.inputs.toolchain || 'proton-clang' }}" = "proton-clang" ]; then
+          # Era-appropriate clang for 4.14 (Google's 4.14/4.19 build clang).
+          # proton-clang HEAD moves fast and regularly breaks 4.14 codegen,
+          # which on a52q shows up as "boots to UI, hangs forever".
+          if [ "${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}" = "proton-clang" ]; then
             echo "::notice::Cloning Proton Clang (LLVM 13+)..."
             git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
           else
@@ -68,6 +71,9 @@ jobs:
         run: |
           echo "::notice::Integrating KernelSU-Next (branch legacy for 4.14)..."
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          # Fail loudly if setup did not land (otherwise CONFIG_KSU=y in
+          # defconfig silently builds a non-KSU kernel and nobody notices).
+          test -d drivers/kernelsu || { echo "::error::KernelSU-Next setup failed (drivers/kernelsu missing)"; exit 1; }
 
           echo "::notice::Fixing sulog/event.c timespec64 compatibility for kernel 4.14..."
           if [ -f KernelSU-Next/kernel/sulog/event.c ]; then
@@ -85,22 +91,13 @@ jobs:
             sed -i '/^extern void __init mnt_init/a extern int path_umount(struct path *path, int flags);' fs/internal.h
           fi
 
-      - name: Configure Defconfig & Disable Module Security Checks
+      - name: Configure Defconfig
         run: |
           DEFCONFIG="arch/arm64/configs/vendor/lineage-a52q_defconfig"
-          echo "::notice::Disabling module signature verification and enabling force loading in $DEFCONFIG..."
-
-          # Disable module signatures & enforcement
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_FORCE
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_ALL
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA1
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA224
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA256
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA384
-          scripts/config --file "$DEFCONFIG" --disable MODULE_SIG_SHA512
-          scripts/config --file "$DEFCONFIG" --set-str MODULE_SIG_HASH ""
-          scripts/config --file "$DEFCONFIG" --set-str MODULE_SIG_KEY ""
+          # NOTE: MODULE_SIG* intentionally untouched here (owned by defconfig).
+          # Keep the kernel release string stable: LOCALVERSION_AUTO appends
+          # -g<sha>[-dirty], which diverges from the ROM on every commit.
+          scripts/config --file "$DEFCONFIG" --disable LOCALVERSION_AUTO
 
           # Enable module force loading/unloading
           scripts/config --file "$DEFCONFIG" --enable MODULE_FORCE_LOAD
@@ -123,9 +120,13 @@ jobs:
           if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
             scripts/config --file "$DEFCONFIG" --enable KSU
             scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
+          else
+            # No-KSU bisect build: drop the KSU symbol so .config stays clean
+            sed -i '/CONFIG_KSU/d' "$DEFCONFIG"
+            echo "# CONFIG_KSU is not set" >> "$DEFCONFIG"
           fi
 
-      - name: Build Kernel (Image.gz-dtb)
+      - name: Build Kernel (Image.gz)
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
           export ARCH=arm64
@@ -140,14 +141,23 @@ jobs:
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             vendor/lineage-a52q_defconfig
 
-          echo "::notice::Compiling Kernel Image.gz-dtb and dtbs..."
+          echo "::notice::Compiling Kernel Image.gz and dtbs..."
+          echo "::notice::Kernel release: $(make -s O=out ARCH=arm64 kernelrelease)"
+          echo "::notice::Key symbols in .config:"
+          grep -E "CONFIG_(KSU|OVERLAY_FS|KPROBES|DEVTMPFS|LOCALVERSION_AUTO|MODULE_SIG_FORCE)" out/.config || true
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            Image.gz-dtb dtbs
+            Image.gz dtbs
+          # KSU sanity: the ksu core symbols must be in vmlinux when KSU is on
+          if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
+            NM_BIN="$(command -v llvm-nm || command -v nm)"
+            "$NM_BIN" out/vmlinux | grep -q "ksu_" || \
+              { echo "::error::KSU enabled but no ksu_ symbols in vmlinux"; exit 1; }
+          fi
 
       - name: Package into AnyKernel3 Flashable ZIP
         run: |
@@ -167,11 +177,12 @@ jobs:
           sed -i '/append_file init.tuna.rc/d' AnyKernel3/anykernel.sh
           sed -i '/append_file fstab.tuna/d' AnyKernel3/anykernel.sh
 
-          # Copy output kernel image
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Found Image.gz-dtb"
-            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+          # Copy output kernel image (plain Image.gz: a52q boot.img hdr v2
+          # carries the stock dtb in its own section plus stock dtbo.img
+          # overlays per board revision, so no appended-dtb image is shipped
+          # and stock dtb/dtbo stay untouched).
+          rm -f AnyKernel3/Image.gz-dtb AnyKernel3/Image-dtb AnyKernel3/dtb AnyKernel3/dtbo.img
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
             echo "Found Image.gz"
             cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
           elif [ -f out/arch/arm64/boot/Image ]; then
@@ -182,9 +193,6 @@ jobs:
             exit 1
           fi
 
-          # Copy dtbo if available
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img || true
-
           # Create flashable ZIP
           cd AnyKernel3
           ZIP_NAME="AnyKernel3-a52q-KernelSU-Next-$(date +'%Y%m%d_%H%M').zip"
@@ -193,6 +201,10 @@ jobs:
 
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           echo "::notice::Packaged flashable zip: $ZIP_NAME"
+
+      - name: Verify AnyKernel3 ZIP
+        run: |
+          python3 verify-ak3.py "$ZIP_NAME"
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
