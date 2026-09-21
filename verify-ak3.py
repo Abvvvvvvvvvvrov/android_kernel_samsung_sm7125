@@ -89,7 +89,7 @@ def main(path):
         ak = ""
     for needle, why in (("BLOCK=boot;", "must flash boot partition (a52q is A-only)"),
                         ("IS_SLOT_DEVICE=0;", "a52q has no slots"),
-                        ("do.devicecheck=1;", "device check must stay on")):
+                        ("do.devicecheck=1", "device check must stay on")):
         if needle in ak:
             print(f"anykernel.sh: {needle} OK")
         else:
