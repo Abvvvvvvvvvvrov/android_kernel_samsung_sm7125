@@ -8,11 +8,6 @@ on:
         required: true
         type: boolean
         default: true
-      susfs_enabled:
-        description: 'Apply SuSFS (Kernel-level root hiding for 4.14)'
-        required: true
-        type: boolean
-        default: true
       toolchain:
         description: 'Compiler Toolchain'
         required: true
@@ -74,21 +69,12 @@ jobs:
           echo "::notice::Integrating KernelSU-Next (branch legacy for 4.14)..."
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Integrate SuSFS (v1.4.2 for kernel-4.14)
-        if: ${{ github.event_name == 'push' || github.event.inputs.susfs_enabled == 'true' }}
-        run: |
-          echo "::notice::Applying SuSFS 4.14 kernel patches..."
-          git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs
-          cp -f susfs/kernel_patches/fs/susfs.c fs/
-          cp -f susfs/kernel_patches/include/linux/susfs.h include/linux/
-          [ -f susfs/kernel_patches/include/linux/susfs_def.h ] && cp -f susfs/kernel_patches/include/linux/susfs_def.h include/linux/ || true
-          patch -p1 --forward < susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || {
-            echo "::warning::Kernel patch applied with warnings or already applied."
-          }
-          if [ -f susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
-            echo "::notice::Applying SuSFS patch to KernelSU..."
-            (cd drivers/kernelsu 2>/dev/null || cd KernelSU 2>/dev/null || true) && \
-            patch -p1 --forward < $GITHUB_WORKSPACE/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          echo "::notice::Fixing sulog/event.c timespec64 compatibility for kernel 4.14..."
+          if [ -f KernelSU-Next/kernel/sulog/event.c ]; then
+            sed -i 's/get_monotonic_boottime(&ts)/ktime_get_boottime_ts64(\&ts)/g' KernelSU-Next/kernel/sulog/event.c
+          fi
+          if [ -f drivers/kernelsu/sulog/event.c ]; then
+            sed -i 's/get_monotonic_boottime(&ts)/ktime_get_boottime_ts64(\&ts)/g' drivers/kernelsu/sulog/event.c
           fi
 
       - name: Configure Defconfig & Disable Module Security Checks
@@ -120,26 +106,16 @@ jobs:
           # Disable Samsung security & perf restrictions
           scripts/config --file "$DEFCONFIG" --disable SECURITY_DEFEX
           scripts/config --file "$DEFCONFIG" --disable UH_RKP
+          scripts/config --file "$DEFCONFIG" --disable UH_LKMAUTH
+          scripts/config --file "$DEFCONFIG" --disable UH_LKM_BLOCK
           scripts/config --file "$DEFCONFIG" --disable SECURITY_PERF_EVENTS_RESTRICT
           scripts/config --file "$DEFCONFIG" --enable DISABLE_LOCKSCREEN_USB_RESTRICTION
 
-          # SuSFS configs
-          scripts/config --file "$DEFCONFIG" --enable KSU
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_HAS_MAGIC_MOUNT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_PATH
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_MOUNT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_KSTAT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SUS_OVERLAYFS
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_TRY_UMOUNT
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SPOOF_UNAME
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_ENABLE_LOG
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          scripts/config --file "$DEFCONFIG" --enable KSU_SUSFS_OPEN_REDIRECT
-          scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
+          # KernelSU configs
+          if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
+            scripts/config --file "$DEFCONFIG" --enable KSU
+            scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
+          fi
 
       - name: Build Kernel (Image.gz-dtb)
         run: |
@@ -198,7 +174,7 @@ jobs:
 
           # Create flashable ZIP
           cd AnyKernel3
-          ZIP_NAME="AnyKernel3-a52q-KernelSU-Next-SuSFS-$(date +'%Y%m%d_%H%M').zip"
+          ZIP_NAME="AnyKernel3-a52q-KernelSU-Next-$(date +'%Y%m%d_%H%M').zip"
           zip -r9 "../$ZIP_NAME" * -x .git README.md *placeholder
           cd ..
 
