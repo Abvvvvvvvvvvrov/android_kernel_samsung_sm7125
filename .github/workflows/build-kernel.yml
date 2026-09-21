@@ -153,12 +153,22 @@ jobs:
           export SUBARCH=arm64
 
           echo "::notice::Generating .config..."
+          TOOLCHAIN_CHOICE="${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}"
+          if [ "$TOOLCHAIN_CHOICE" = "proton-clang" ]; then
+            # Proton build: LLVM binutils (this combo produced a booting image before)
+            T_AR=llvm-ar; T_NM=llvm-nm; T_OBJCOPY=llvm-objcopy; T_OBJDUMP=llvm-objdump; T_STRIP=llvm-strip
+          else
+            # AOSP clang era setup: GNU binutils. llvm-objcopy from r450784e
+            # cannot parse GNU ld output ("Link field value ... in section
+            # .rela.dyn is not a symbol table") at the Image packaging step.
+            T_AR=aarch64-linux-gnu-ar; T_NM=aarch64-linux-gnu-nm; T_OBJCOPY=aarch64-linux-gnu-objcopy; T_OBJDUMP=aarch64-linux-gnu-objdump; T_STRIP=aarch64-linux-gnu-strip
+          fi
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            AR="$T_AR" NM="$T_NM" OBJCOPY="$T_OBJCOPY" OBJDUMP="$T_OBJDUMP" STRIP="$T_STRIP" \
             vendor/lineage-a52q_defconfig
 
           echo "::notice::Compiling Kernel Image.gz and dtbs..."
@@ -170,12 +180,11 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            AR="$T_AR" NM="$T_NM" OBJCOPY="$T_OBJCOPY" OBJDUMP="$T_OBJDUMP" STRIP="$T_STRIP" \
             Image.gz dtbs
           # KSU sanity: the ksu core symbols must be in vmlinux when KSU is on
           if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
-            NM_BIN="$(command -v llvm-nm || command -v nm)"
-            "$NM_BIN" out/vmlinux | grep -q "ksu_" || \
+            "$T_NM" out/vmlinux | grep -q "ksu_" || \
               { echo "::error::KSU enabled but no ksu_ symbols in vmlinux"; exit 1; }
           fi
 
