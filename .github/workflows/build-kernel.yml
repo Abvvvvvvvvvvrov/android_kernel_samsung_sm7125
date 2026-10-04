@@ -90,7 +90,9 @@ jobs:
         if: ${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}
         run: |
           echo "::notice::Integrating KernelSU-Next (branch legacy for 4.14)..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          if [ ! -d "drivers/kernelsu" ]; then
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          fi
           # Fail loudly if setup did not land (otherwise CONFIG_KSU=y in
           # defconfig silently builds a non-KSU kernel and nobody notices).
           test -d drivers/kernelsu || { echo "::error::KernelSU-Next setup failed (drivers/kernelsu missing)"; exit 1; }
@@ -139,6 +141,8 @@ jobs:
           # KernelSU configs
           if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
             scripts/config --file "$DEFCONFIG" --enable KSU
+            scripts/config --file "$DEFCONFIG" --enable KSU_MANUAL_HOOK
+            scripts/config --file "$DEFCONFIG" --disable KSU_KPROBES_HOOK
             scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
           else
             # No-KSU bisect build: drop the KSU symbol so .config stays clean
@@ -174,7 +178,8 @@ jobs:
           echo "::notice::Compiling Kernel Image.gz and dtbs..."
           echo "::notice::Kernel release: $(make -s O=out ARCH=arm64 kernelrelease)"
           echo "::notice::Key symbols in .config:"
-          grep -E "CONFIG_(KSU|OVERLAY_FS|KPROBES|DEVTMPFS|LOCALVERSION_AUTO|MODULE_SIG_FORCE)" out/.config || true
+          grep -E "CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_KPROBES_HOOK|OVERLAY_FS|KPROBES|DEVTMPFS|LOCALVERSION_AUTO|MODULE_SIG_FORCE)" out/.config || true
+
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -201,10 +206,12 @@ jobs:
           sed -i 's/device.name4=.*/device.name4=SM-A525M/g' AnyKernel3/anykernel.sh
           sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' AnyKernel3/anykernel.sh
-          # Remove example tuna patches from anykernel.sh
-          sed -i '/# init.rc/,/# fstab.tuna/d' AnyKernel3/anykernel.sh
-          sed -i '/append_file init.tuna.rc/d' AnyKernel3/anykernel.sh
-          sed -i '/append_file fstab.tuna/d' AnyKernel3/anykernel.sh
+          # Remove Galaxy Nexus (tuna) example block from anykernel.sh.
+          # Upstream layout changes silently break range-based seds, and
+          # leftover backup_file/patch_fstab lines, while harmless no-ops
+          # on a52q (no fstab.tuna in ramdisk), are dead weight. "tuna"
+          # occurs nowhere else in a stock anykernel.sh, so match it directly.
+          sed -i '/tuna/d' AnyKernel3/anykernel.sh
 
           # Copy output kernel image (plain Image.gz: a52q boot.img hdr v2
           # carries the stock dtb in its own section plus stock dtbo.img

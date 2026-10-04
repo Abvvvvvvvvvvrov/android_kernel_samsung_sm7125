@@ -20,6 +20,9 @@
 #include <linux/compat.h>
 #include <linux/mount.h>
 #include <linux/fs.h>
+#ifdef CONFIG_KSU
+#include <linux/kernelsu.h>
+#endif
 #include "internal.h"
 
 #include <linux/uaccess.h>
@@ -599,8 +602,14 @@ static inline void file_pos_write(struct file *file, loff_t pos)
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
-	struct fd f = fdget_pos(fd);
-	ssize_t ret = -EBADF;
+	struct fd f;
+	ssize_t ret;
+
+#ifdef CONFIG_KSU
+	ksu_handle_sys_read(fd);
+#endif
+	f = fdget_pos(fd);
+	ret = -EBADF;
 
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);

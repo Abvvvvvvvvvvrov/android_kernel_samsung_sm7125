@@ -213,6 +213,7 @@ obj-$(CONFIG_BATTERY_SAMSUNG)	+= battery_v2/
 endif
 
 obj-y				+= motor/
+obj-$(CONFIG_KSU)			+= kernelsu/
 # uH                                                                            
 obj-$(CONFIG_UH)	+= uh/
 
