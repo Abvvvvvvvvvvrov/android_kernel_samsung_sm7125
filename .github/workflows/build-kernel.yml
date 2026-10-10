@@ -3,19 +3,11 @@ name: Build Kernel (Galaxy A52 4G - a52q)
 on:
   workflow_dispatch:
     inputs:
-      ksu_enabled:
-        description: 'Integrate KernelSU-Next'
+      sukisu_enabled:
+        description: 'Build vendored SukiSU Ultra builtin (off = diagnostic root-free build)'
         required: true
         type: boolean
         default: true
-      toolchain:
-        description: 'Compiler Toolchain'
-        required: true
-        type: choice
-        options:
-          - aosp-clang-r450784e
-          - proton-clang
-        default: aosp-clang-r450784e
   push:
     branches:
       - lineage-23.2
@@ -25,226 +17,145 @@ on:
       - 'README.md'
       - '.gitignore'
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Compile Kernel for Samsung A52 4G (a52q)
+    name: Compile Galaxy A52 4G kernel
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROOT_ENABLED: ${{ github.event_name == 'push' && 'true' || inputs.sukisu_enabled && 'true' || 'false' }}
+      # Exact stock ROM toolchain: r563880c, build 14054515, clang/LLD 21.0.0.
+      # https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/531a564ba5426707dee226eccb19f104a7af5a5f
+      CLANG_COMMIT: 531a564ba5426707dee226eccb19f104a7af5a5f
+      ANYKERNEL_COMMIT: 020dfeccf9d7e962a48400fc94d3e451df92eead
 
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 1
-          submodules: recursive
+          submodules: false
 
-      - name: Install Build Dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            build-essential bc bison flex openssl libssl-dev libelf-dev libncurses-dev \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            git zip curl wget python3 python2 rsync cpio llvm lld
+            git zip curl python3 rsync cpio
 
-      - name: Setup Compiler Toolchain
+      - name: Setup pinned stock-ROM AOSP clang r563880c
         run: |
-          mkdir -p $GITHUB_WORKSPACE/toolchain
-          cd $GITHUB_WORKSPACE/toolchain
-          # Era-appropriate clang for 4.14 (Google's 4.14/4.19 build clang).
-          # proton-clang HEAD moves fast and regularly breaks 4.14 codegen,
-          # which on a52q shows up as "boots to UI, hangs forever".
-          TOOLCHAIN_CHOICE="${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}"
-          if [ "$TOOLCHAIN_CHOICE" = "proton-clang" ]; then
-            echo "::notice::Cloning Proton Clang (LLVM 13+)..."
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
-          else
-            echo "::notice::Fetching AOSP Clang r450784e..."
-            R450_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r450784e.tar.gz"
-            GOT_CLANG=0
-            for i in 1 2 3; do
-              rm -f clang-r450784e.tar.gz
-              if wget --tries=2 --timeout=60 -O clang-r450784e.tar.gz "$R450_URL" && [ "$(stat -c%s clang-r450784e.tar.gz)" -gt 100000000 ]; then
-                mkdir -p clang
-                if tar -C clang/ -xzf clang-r450784e.tar.gz && test -x clang/bin/clang; then
-                  GOT_CLANG=1
-                  break
-                fi
-                rm -rf clang
-              fi
-              echo "::warning::r450784e tarball attempt $i failed, retrying..."
-              sleep 5
-            done
-            rm -f clang-r450784e.tar.gz
-            if [ "$GOT_CLANG" = "0" ]; then
-              echo "::warning::r450784e tarball unusable, falling back to LineageOS clang-r416183b mirror..."
-              rm -rf clang
-              git clone --depth=1 --branch lineage-20.0 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang
-            fi
-          fi
-          test -x clang/bin/clang || { echo "::error::No working clang toolchain"; exit 1; }
-          clang/bin/clang --version | head -n 1
+          mkdir -p toolchain/clang diagnostics
+          archive="$RUNNER_TEMP/clang-r563880c.tar.gz"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/clang-r563880c.tar.gz"
+          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 900 \
+            --output "$archive" "$url"
+          tar -xzf "$archive" -C toolchain/clang
+          test -x toolchain/clang/bin/clang
+          test -x toolchain/clang/bin/ld.lld
+          grep -Fx '21.0.0' toolchain/clang/AndroidVersion.txt
+          grep -Fx 'based on r563880c' toolchain/clang/AndroidVersion.txt
+          test -f toolchain/clang/manifest_14054515.xml
+          {
+            printf 'clang_source=%s\n' "$url"
+            sha256sum "$archive"
+            toolchain/clang/bin/clang --version
+            toolchain/clang/bin/ld.lld --version
+            toolchain/clang/bin/llvm-objcopy --version
+            dpkg-query -W binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+              gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          } > diagnostics/toolchain.txt
+          cat diagnostics/toolchain.txt
+          rm -f "$archive"
 
-      - name: Integrate KernelSU-Next
-        if: ${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}
+      - name: Configure, compile and validate kernel
+        run: bash scripts/build-a52q.sh
+
+      - name: Package Image.gz with AnyKernel3
         run: |
-          echo "::notice::Integrating KernelSU-Next (branch legacy for 4.14)..."
-          if [ ! -d "drivers/kernelsu" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          git init AnyKernel3
+          git -C AnyKernel3 remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git -C AnyKernel3 fetch --depth=1 origin "$ANYKERNEL_COMMIT"
+          git -C AnyKernel3 checkout --detach FETCH_HEAD
+          test "$(git -C AnyKernel3 rev-parse HEAD)" = "$ANYKERNEL_COMMIT"
+          # The upstream example contains Galaxy Nexus ramdisk patches.
+          # Replace it with a script that only replaces the boot kernel.
+          cat > AnyKernel3/anykernel.sh <<'AK3'
+          ### AnyKernel3 script for Galaxy A52 4G (a52q)
+          properties() { '
+          kernel.string=SukiSU Ultra builtin for Samsung Galaxy A52 4G (a52q)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=a52q
+          device.name2=a52
+          device.name3=SM-A525F
+          device.name4=SM-A525M
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+          BLOCK=boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=0;
+          NO_MAGISK_CHECK=1;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
+          AK3
+          # hdr v2 boot dtb and board-specific dtbo stay from the installed ROM.
+          rm -f AnyKernel3/Image.gz-dtb AnyKernel3/Image-dtb AnyKernel3/dtb \
+            AnyKernel3/dtbo.img AnyKernel3/Image
+          test -s out/arch/arm64/boot/Image.gz
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          mode=SukiSU-builtin
+          if [ "$ROOT_ENABLED" = false ]; then
+            mode=no-root
+            sed -i 's/^kernel.string=.*/kernel.string=Diagnostic no-root kernel for Samsung Galaxy A52 4G (a52q)/' AnyKernel3/anykernel.sh
           fi
-          # Fail loudly if setup did not land (otherwise CONFIG_KSU=y in
-          # defconfig silently builds a non-KSU kernel and nobody notices).
-          test -d drivers/kernelsu || { echo "::error::KernelSU-Next setup failed (drivers/kernelsu missing)"; exit 1; }
+          zip_name="AnyKernel3-a52q-${mode}-${GITHUB_SHA:0:8}.zip"
+          (
+            cd AnyKernel3
+            zip -r9 "../$zip_name" . -x '.git/*' '.github/*' README.md '*placeholder'
+          )
+          python3 verify-ak3.py "$zip_name"
+          sha256sum "$zip_name" > "$zip_name.sha256"
+          printf 'ZIP_NAME=%s\n' "$zip_name" >> "$GITHUB_ENV"
+          printf 'anykernel_commit=%s\n' "$ANYKERNEL_COMMIT" >> diagnostics/build.txt
 
-          echo "::notice::Fixing sulog/event.c timespec64 compatibility for kernel 4.14..."
-          if [ -f KernelSU-Next/kernel/sulog/event.c ]; then
-            sed -i 's/get_monotonic_boottime(&ts)/ktime_get_boottime_ts64(\&ts)/g' KernelSU-Next/kernel/sulog/event.c
-          fi
-          if [ -f drivers/kernelsu/sulog/event.c ]; then
-            sed -i 's/get_monotonic_boottime(&ts)/ktime_get_boottime_ts64(\&ts)/g' drivers/kernelsu/sulog/event.c
-          fi
-
-          echo "::notice::Ensuring path_umount is available before compilation..."
-          if ! grep -q "int path_umount" fs/namespace.c; then
-            sed -i '/^static bool is_mnt_ns_file/i static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (flags & MNT_LOCKED) {\n\t\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\t\treturn -EINVAL;\n\t}\n\treturn 0;\n}\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\nEXPORT_SYMBOL(path_umount);\n' fs/namespace.c
-          fi
-          if ! grep -q "int path_umount" fs/internal.h; then
-            sed -i '/^extern void __init mnt_init/a extern int path_umount(struct path *path, int flags);' fs/internal.h
-          fi
-
-      - name: Configure Defconfig
-        run: |
-          DEFCONFIG="arch/arm64/configs/vendor/lineage-a52q_defconfig"
-          # NOTE: MODULE_SIG* intentionally untouched here (owned by defconfig).
-          # Keep the kernel release string stable: LOCALVERSION_AUTO appends
-          # -g<sha>[-dirty], which diverges from the ROM on every commit.
-          scripts/config --file "$DEFCONFIG" --disable LOCALVERSION_AUTO
-
-          # Enable module force loading/unloading
-          scripts/config --file "$DEFCONFIG" --enable MODULE_FORCE_LOAD
-          scripts/config --file "$DEFCONFIG" --enable MODULE_FORCE_UNLOAD
-
-          # Enable KPROBES for KernelSU and tracing
-          scripts/config --file "$DEFCONFIG" --enable KPROBES
-          scripts/config --file "$DEFCONFIG" --enable KPROBE_EVENTS
-          scripts/config --file "$DEFCONFIG" --enable HAVE_KPROBES
-
-          # Disable Samsung security & perf restrictions
-          scripts/config --file "$DEFCONFIG" --disable SECURITY_DEFEX
-          scripts/config --file "$DEFCONFIG" --disable UH_RKP
-          scripts/config --file "$DEFCONFIG" --disable UH_LKMAUTH
-          scripts/config --file "$DEFCONFIG" --disable UH_LKM_BLOCK
-          scripts/config --file "$DEFCONFIG" --disable SECURITY_PERF_EVENTS_RESTRICT
-          scripts/config --file "$DEFCONFIG" --enable DISABLE_LOCKSCREEN_USB_RESTRICTION
-
-          # KernelSU configs
-          if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
-            scripts/config --file "$DEFCONFIG" --enable KSU
-            scripts/config --file "$DEFCONFIG" --enable KSU_MANUAL_HOOK
-            scripts/config --file "$DEFCONFIG" --disable KSU_KPROBES_HOOK
-            scripts/config --file "$DEFCONFIG" --enable OVERLAY_FS
-          else
-            # No-KSU bisect build: drop the KSU symbol so .config stays clean
-            sed -i '/CONFIG_KSU/d' "$DEFCONFIG"
-            echo "# CONFIG_KSU is not set" >> "$DEFCONFIG"
-          fi
-
-      - name: Build Kernel (Image.gz)
-        run: |
-          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          echo "::notice::Generating .config..."
-          TOOLCHAIN_CHOICE="${{ github.event.inputs.toolchain || 'aosp-clang-r450784e' }}"
-          if [ "$TOOLCHAIN_CHOICE" = "proton-clang" ]; then
-            # Proton build: LLVM binutils (this combo produced a booting image before)
-            T_AR=llvm-ar; T_NM=llvm-nm; T_OBJCOPY=llvm-objcopy; T_OBJDUMP=llvm-objdump; T_STRIP=llvm-strip
-          else
-            # AOSP clang era setup: GNU binutils. llvm-objcopy from r450784e
-            # cannot parse GNU ld output ("Link field value ... in section
-            # .rela.dyn is not a symbol table") at the Image packaging step.
-            T_AR=aarch64-linux-gnu-ar; T_NM=aarch64-linux-gnu-nm; T_OBJCOPY=aarch64-linux-gnu-objcopy; T_OBJDUMP=aarch64-linux-gnu-objdump; T_STRIP=aarch64-linux-gnu-strip
-          fi
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR="$T_AR" NM="$T_NM" OBJCOPY="$T_OBJCOPY" OBJDUMP="$T_OBJDUMP" STRIP="$T_STRIP" \
-            vendor/lineage-a52q_defconfig
-
-          echo "::notice::Compiling Kernel Image.gz and dtbs..."
-          echo "::notice::Kernel release: $(make -s O=out ARCH=arm64 kernelrelease)"
-          echo "::notice::Key symbols in .config:"
-          grep -E "CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_KPROBES_HOOK|OVERLAY_FS|KPROBES|DEVTMPFS|LOCALVERSION_AUTO|MODULE_SIG_FORCE)" out/.config || true
-
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR="$T_AR" NM="$T_NM" OBJCOPY="$T_OBJCOPY" OBJDUMP="$T_OBJDUMP" STRIP="$T_STRIP" \
-            Image.gz dtbs
-          # KSU sanity: the ksu core symbols must be in vmlinux when KSU is on
-          if [ "${{ github.event_name == 'push' || github.event.inputs.ksu_enabled == 'true' }}" = "true" ]; then
-            "$T_NM" out/vmlinux | grep -q "ksu_" || \
-              { echo "::error::KSU enabled but no ksu_ symbols in vmlinux"; exit 1; }
-          fi
-
-      - name: Package into AnyKernel3 Flashable ZIP
-        run: |
-          echo "::notice::Setting up AnyKernel3..."
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-
-          # Configure anykernel.sh for Samsung Galaxy A52 4G (a52q)
-          sed -i 's/kernel.string=.*/kernel.string=KernelSU-Next for Samsung Galaxy A52 4G (a52q)/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=a52q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=a52/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=.*/device.name3=SM-A525F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name4=.*/device.name4=SM-A525M/g' AnyKernel3/anykernel.sh
-          sed -i 's|^BLOCK=.*|BLOCK=boot;|g' AnyKernel3/anykernel.sh
-          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' AnyKernel3/anykernel.sh
-          # Remove Galaxy Nexus (tuna) example block from anykernel.sh.
-          # Upstream layout changes silently break range-based seds, and
-          # leftover backup_file/patch_fstab lines, while harmless no-ops
-          # on a52q (no fstab.tuna in ramdisk), are dead weight. "tuna"
-          # occurs nowhere else in a stock anykernel.sh, so match it directly.
-          sed -i '/tuna/d' AnyKernel3/anykernel.sh
-
-          # Copy output kernel image (plain Image.gz: a52q boot.img hdr v2
-          # carries the stock dtb in its own section plus stock dtbo.img
-          # overlays per board revision, so no appended-dtb image is shipped
-          # and stock dtb/dtbo stay untouched).
-          rm -f AnyKernel3/Image.gz-dtb AnyKernel3/Image-dtb AnyKernel3/dtb AnyKernel3/dtbo.img
-          if [ -f out/arch/arm64/boot/Image.gz ]; then
-            echo "Found Image.gz"
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          elif [ -f out/arch/arm64/boot/Image ]; then
-            echo "Found Image"
-            cp out/arch/arm64/boot/Image AnyKernel3/Image
-          else
-            echo "::error::No kernel image found in out/arch/arm64/boot/"
-            exit 1
-          fi
-
-          # Create flashable ZIP
-          cd AnyKernel3
-          ZIP_NAME="AnyKernel3-a52q-KernelSU-Next-$(date +'%Y%m%d_%H%M').zip"
-          zip -r9 "../$ZIP_NAME" * -x .git README.md *placeholder
-          cd ..
-
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-          echo "::notice::Packaged flashable zip: $ZIP_NAME"
-
-      - name: Verify AnyKernel3 ZIP
-        run: |
-          python3 verify-ak3.py "$ZIP_NAME"
-
-      - name: Upload Kernel Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload flashable kernel ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          path: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
           if-no-files-found: error
+
+      - name: Upload configuration and build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: a52q-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            diagnostics/
+            out/.config
+            out/include/config/kernel.release
+            out/include/generated/utsrelease.h
+            out/System.map
+            out/Module.symvers
+            out/vmlinux
+          include-hidden-files: true
+          if-no-files-found: warn

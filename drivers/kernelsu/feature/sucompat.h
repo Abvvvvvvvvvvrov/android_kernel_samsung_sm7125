@@ -1,17 +1,30 @@
 #ifndef __KSU_H_SUCOMPAT
 #define __KSU_H_SUCOMPAT
+#include <asm/ptrace.h>
 #include <linux/types.h>
 
 extern bool ksu_su_compat_enabled;
 
+#ifdef CONFIG_KSU_SUSFS
+int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
+             int *__unused_flags);
+int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
+int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+                 void *argv_user, void *envp_user,
+                 int *__never_use_flags);
+#else
+/* Called only after a successful exec for a pre-hook result of 1. */
+void ksu_handle_su_execveat_success(void);
+int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);
+int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+int ksu_handle_execve_sucompat(int *fd, const char __user **filename_user, void *argv, void *__never_use_envp,
+                               int *__never_use_flags);
+/* Return 1 only when su was redirected to ksud with a root profile. */
+int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *__never_use_envp,
+                                 int *__never_use_flags);
+#endif
+
 void ksu_sucompat_init(void);
 void ksu_sucompat_exit(void);
-
-// Handler functions exported for hook_manager
-int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
-				int *mode, int *__unused_flags);
-int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, const struct pt_regs *regs);
-long ksu_handle_execveat_sucompat_user(const char __user **filename_user, int orig_nr, const struct pt_regs *regs);
 
 #endif

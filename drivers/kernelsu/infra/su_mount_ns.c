@@ -1,31 +1,4 @@
-#include <linux/dcache.h>
-#include <linux/errno.h>
-#include <linux/fdtable.h>
-#include <linux/file.h>
-#include <linux/fs.h>
-#include <linux/fs_struct.h>
-#include <linux/limits.h>
-#include <linux/namei.h>
-#include <linux/proc_ns.h>
-#include <linux/pid.h>
-#include <linux/sched/task.h>
-#include <linux/slab.h>
-#include <linux/syscalls.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-#include <uapi/linux/mount.h>
-#else
-#include <uapi/linux/fs.h>
-#endif
-
-#include "arch.h"
-#include "klog.h" // IWYU pragma: keep
-#include "ksu.h"
-#include "infra/su_mount_ns.h"
-#include "util.h"
-
-extern int path_mount(const char *dev_name, struct path *path,
-                      const char *type_page, unsigned long flags,
+extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
                       void *data_page);
 
 // global mode , need CAP_SYS_ADMIN and CAP_SYS_CHROOT to perform setns
@@ -46,8 +19,7 @@ static void ksu_mnt_ns_global(void)
 
     if (IS_ERR(pwd_path)) {
         if (PTR_ERR(pwd_path) == -ENAMETOOLONG) {
-            pr_warn("absolute pwd longer than: %d, skip restore pwd!!\n",
-                    PATH_MAX);
+            pr_warn("absolute pwd longer than: %d, skip restore pwd!!\n", PATH_MAX);
         } else {
             pr_warn("get absolute pwd failed: %ld\n", PTR_ERR(pwd_path));
         }
@@ -73,18 +45,17 @@ try_setns:
         goto out;
     }
     struct path ns_path;
-    long ret = ns_get_path(&ns_path, pid1_task, &mntns_operations);
+    long ret = (long)ns_get_path(&ns_path, pid1_task, &mntns_operations);
     put_task_struct(pid1_task);
     if (ret) {
         pr_warn("failed get path for init mount namespace: %ld\n", ret);
         goto out;
     }
-    struct file *ns_file = dentry_open(&ns_path, O_RDONLY, ksu_cred);
 
+    struct file *ns_file = dentry_open(&ns_path, O_RDONLY, ksu_cred);
     path_put(&ns_path);
     if (IS_ERR(ns_file)) {
-        pr_warn("failed open file for init mount namespace: %ld\n",
-                PTR_ERR(ns_file));
+        pr_warn("failed open file for init mount namespace: %ld\n", PTR_ERR(ns_file));
         goto out;
     }
 
@@ -98,7 +69,7 @@ try_setns:
     fd_install(fd, ns_file);
     ret = ksu_sys_setns(fd, CLONE_NEWNS);
 
-    ksu_close_fd(fd);
+    close_fd(fd);
 
     if (ret) {
         pr_warn("call setns failed: %ld\n", ret);
@@ -122,7 +93,7 @@ out:
 // individual mode , need CAP_SYS_ADMIN to perform unshare and remount
 static void ksu_mnt_ns_individual(void)
 {
-    long ret = ksu_sys_unshare(CLONE_NEWNS);
+    long ret = ksys_unshare(CLONE_NEWNS);
     if (ret) {
         pr_warn("call ksys_unshare failed: %ld\n", ret);
         return;
@@ -148,8 +119,12 @@ void setup_mount_ns(int32_t ns_mode)
     }
 
     if (ns_mode != KSU_NS_GLOBAL && ns_mode != KSU_NS_INDIVIDUAL) {
-        pr_warn("pid: %d ,unknown mount namespace mode: %d\n", current->pid,
-                ns_mode);
+        pr_warn("pid: %d ,unknown mount namespace mode: %d\n", current->pid, ns_mode);
+        return;
+    }
+
+    if (!ksu_cred) {
+        pr_err("no ksu cred! skip mnt_ns magic for pid: %d.\n", current->pid);
         return;
     }
 

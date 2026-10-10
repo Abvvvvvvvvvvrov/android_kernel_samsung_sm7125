@@ -10,8 +10,10 @@ Checks (fail loudly, exit 1):
     + stock dtbo overlays per board revision; appended-dtb images and foreign
     dtbo files are a classic boot-hang source).
   * Image.gz has valid gzip magic, decompresses fully, sane size.
-  * Decompressed Image embeds a "Linux version 4.14..." string; warn on -dirty.
-  * anykernel.sh targets boot partition, non-slot device, a52q device names.
+  * ARM64 Image magic and exact release from LineageOS 20260817.
+  * anykernel.sh targets boot partition, non-slot device, a52q device names;
+    split_boot/flash_boot preserve the installed ramdisk, appended kernel_dtb
+    and separate hdr-v2 dtb. No automatic Magisk DTB or vbmeta patching.
 
 Stdlib only, runs on CI (ubuntu) and locally (Windows).
 """
@@ -19,11 +21,13 @@ import gzip
 import re
 import sys
 import zipfile
+import zlib
 
 REQUIRED_DEVICES = ("a52q", "SM-A525")
 FORBIDDEN = ("Image.gz-dtb", "Image-dtb", "dtb", "dtbo.img")
 MIN_IMG = 5 * 1024 * 1024        # compressed Image.gz below this = truncated
 MAX_IMG = 40 * 1024 * 1024       # above this = something wrong (e.g. debug blob)
+EXPECTED_RELEASE = "4.14.356-openela-rc1-perf-g98de87f1b888"
 
 
 def fail(msg):
@@ -54,33 +58,34 @@ def main(path):
 
     raw = zf.read(img_name)
     print(f"compressed size: {len(raw)} bytes")
+    img = raw
     if img_name.endswith(".gz"):
         if raw[:2] != b"\x1f\x8b":
             ok = fail("Image.gz has bad gzip magic") and ok
         else:
             try:
                 img = gzip.decompress(raw)
-            except (OSError, EOFError) as e:
+            except (OSError, EOFError, zlib.error) as e:
                 img = b""
                 ok = fail(f"Image.gz does not decompress fully: {e}") and ok
             print(f"decompressed size: {len(img)} bytes")
             if not MIN_IMG <= len(raw) <= MAX_IMG:
                 ok = fail(f"compressed size {len(raw)} outside sane range "
                            f"[{MIN_IMG}, {MAX_IMG}]") and ok
-            m = re.search(rb"Linux version (\S+)", img)
-            if m:
-                ver = m.group(1).decode("ascii", "replace")
-                print(f"embedded version: Linux version {ver}")
-                if not ver.startswith("4.14."):
-                    ok = fail(f"unexpected kernel version: {ver}") and ok
-                if "dirty" in ver:
-                    print("VERIFY WARN: version string contains -dirty "
-                          "(tree was modified during build)")
-            else:
-                ok = fail("no 'Linux version' string inside Image") and ok
     else:
         if len(raw) < MIN_IMG:
             ok = fail(f"Image too small ({len(raw)} bytes), truncated?") and ok
+
+    if img[56:60] != b"ARMd":
+        ok = fail("kernel does not have the ARM64 Image header magic") and ok
+    m = re.search(rb"Linux version (\S+)", img)
+    if m:
+        ver = m.group(1).decode("ascii", "replace")
+        print(f"embedded version: Linux version {ver}")
+        if ver != EXPECTED_RELEASE:
+            ok = fail(f"kernel release {ver!r} differs from ROM {EXPECTED_RELEASE!r}") and ok
+    else:
+        ok = fail("no 'Linux version' string inside Image") and ok
 
     try:
         ak = zf.read("anykernel.sh").decode("utf-8", "replace")
@@ -89,7 +94,11 @@ def main(path):
         ak = ""
     for needle, why in (("BLOCK=boot;", "must flash boot partition (a52q is A-only)"),
                         ("IS_SLOT_DEVICE=0;", "a52q has no slots"),
-                        ("do.devicecheck=1", "device check must stay on")):
+                        ("do.devicecheck=1", "device check must stay on"),
+                        ("NO_MAGISK_CHECK=1;", "preserve stock DTB without automatic Magisk patches"),
+                        ("PATCH_VBMETA_FLAG=0;", "preserve stock vbmeta flags"),
+                        ("split_boot;", "unpack the installed boot image"),
+                        ("flash_boot;", "replace kernel while preserving split ramdisk and DTBs")):
         if needle in ak:
             print(f"anykernel.sh: {needle} OK")
         else:

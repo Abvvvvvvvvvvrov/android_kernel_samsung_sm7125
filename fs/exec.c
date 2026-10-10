@@ -64,7 +64,7 @@
 #include <linux/vmalloc.h>
 #include <linux/task_integrity.h>
 #ifdef CONFIG_KSU
-#include <linux/kernelsu.h>
+#include <linux/sukisu.h>
 #endif
 
 #include <linux/uaccess.h>
@@ -1875,13 +1875,17 @@ static int __do_execve_file(int fd, struct filename *filename,
 	struct linux_binprm *bprm;
 	struct files_struct *displaced;
 	int retval;
+#ifdef CONFIG_KSU
+	bool sukisu_su_exec = false;
+#endif
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 
 #ifdef CONFIG_KSU
 	if (filename)
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		sukisu_su_exec = ksu_handle_execveat(&fd, &filename, &argv,
+						 &envp, &flags) == 1;
 #endif
 
 	/*
@@ -2011,6 +2015,11 @@ static int __do_execve_file(int fd, struct filename *filename,
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
+#ifdef CONFIG_KSU
+	/* Install after exec has closed CLOEXEC fds; never on a failed exec. */
+	if (sukisu_su_exec)
+		ksu_handle_su_execveat_success();
+#endif
 	membarrier_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);

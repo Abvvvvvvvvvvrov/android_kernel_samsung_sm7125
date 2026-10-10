@@ -18,7 +18,7 @@
 #include <linux/pagemap.h>
 #include <linux/compat.h>
 #ifdef CONFIG_KSU
-#include <linux/kernelsu.h>
+#include <linux/sukisu.h>
 #endif
 
 #include <linux/uaccess.h>
@@ -145,6 +145,10 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
 	if (f.file) {
 		error = vfs_getattr(&f.file->f_path, stat,
 				    request_mask, query_flags);
+#ifdef CONFIG_KSU
+		if (!error)
+			ksu_handle_vfs_fstat(fd, &stat->size);
+#endif
 		fdput(f);
 	}
 	return error;
