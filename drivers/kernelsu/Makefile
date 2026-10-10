@@ -69,7 +69,7 @@ ifeq ($(shell grep -q "struct selinux_state " $(srctree)/security/selinux/includ
 ccflags-y += -DKSU_COMPAT_HAS_SELINUX_STATE
 endif
 
-ifeq ($(shell grep -q "enforcing_enabled(struct selinux_state" $(srctree)/security/selinux/include/security.h; echo $$?),0)
+ifeq ($(shell grep -q "enforcing_enabled.*struct selinux_state" $(srctree)/security/selinux/include/security.h; echo $$?),0)
 ccflags-y += -DKSU_COMPAT_HAS_ENFORCING_ACCESSORS
 endif
 
