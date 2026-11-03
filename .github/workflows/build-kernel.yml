@@ -57,8 +57,19 @@ jobs:
           mkdir -p toolchain/clang diagnostics
           archive="$RUNNER_TEMP/clang-r563880c.tar.gz"
           url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/clang-r563880c.tar.gz"
-          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 900 \
-            --output "$archive" "$url"
+          # Gitiles can end a streaming archive early with HTTP 200. Validate
+          # the gzip stream before extraction and retry incomplete downloads.
+          valid=false
+          for attempt in 1 2 3 4; do
+            rm -f "$archive"
+            if curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 900 \
+              --output "$archive" "$url" && gzip -t "$archive"; then
+              valid=true
+              break
+            fi
+            echo "::warning::Toolchain archive incomplete (attempt $attempt/4)"
+          done
+          test "$valid" = true
           tar -xzf "$archive" -C toolchain/clang
           test -x toolchain/clang/bin/clang
           test -x toolchain/clang/bin/ld.lld
