@@ -44,9 +44,11 @@ def main():
     # signature enforcement, even though the stock ROM enables it.
     if config.get("CONFIG_MODULE_SIG_FORCE", "n") != "n":
         errors.append("CONFIG_MODULE_SIG_FORCE must remain disabled by user request")
-    for key in ("CONFIG_KSU_MANUAL_HOOK", "CONFIG_KSU_KPROBES_HOOK", "CONFIG_KSU_SYSCALL_TABLE_HOOK"):
-        if key in config:
-            errors.append(f"obsolete KernelSU-Next symbol remains: {key}")
+    if root and config.get("CONFIG_KSU_MANUAL_HOOK", "n") != "y":
+        errors.append("CONFIG_KSU_MANUAL_HOOK must be enabled")
+    for key in ("CONFIG_KSU_KPROBES_HOOK", "CONFIG_KSU_SYSCALL_TABLE_HOOK"):
+        if config.get(key, "n") != "n":
+            errors.append(f"{key} must be disabled")
     for key in set(baseline) | set(config):
         if key.startswith("CONFIG_KSU") or key == "CONFIG_KPM":
             continue
@@ -77,11 +79,11 @@ def main():
                 symbols.add(fields[-1])
         if root:
             required = ("kernelsu_init", "ksu_handle_execveat", "ksu_handle_faccessat",
-                        "ksu_handle_stat", "ksu_handle_sys_read", "ksu_handle_vfs_fstat",
-                        "ksu_handle_sys_reboot", "ksu_handle_su_execveat_success")
+                        "ksu_handle_stat", "ksu_handle_sys_read", "ksu_handle_sys_reboot",
+                        "ksu_handle_input_handle_event")
             for name in required:
                 if name not in symbols:
-                    errors.append(f"built-in SukiSU symbol missing: {name}")
+                    errors.append(f"built-in KernelSU-Next symbol missing: {name}")
         else:
             root_symbols = sorted(name for name in symbols
                                   if name.startswith("ksu_") or name == "kernelsu_init")
@@ -94,7 +96,7 @@ def main():
         for error in errors:
             print(f"VERIFY FAIL: {error}", file=sys.stderr)
         return 1
-    print(f"VERIFY PASSED: SukiSU={expected}, SUSFS=n, KPM=n; unrelated config unchanged")
+    print(f"VERIFY PASSED: KernelSU-Next={expected}, SUSFS=n, KPM=n; unrelated config unchanged")
     if args.symbols:
         print("VERIFY PASSED: vmlinux root symbols match requested mode")
     if args.stock_config:

@@ -14,7 +14,7 @@ export ARCH=arm64
 export SUBARCH=arm64
 mkdir -p out diagnostics
 
-test -f drivers/kernelsu/ksu.c
+test -f drivers/kernelsu/core/init.c
 test -f drivers/kernelsu/Kconfig
 test -x toolchain/clang/bin/clang
 test -s scripts/a52q-lineage-20260817.config
@@ -32,14 +32,14 @@ make_args=(O=out ARCH=arm64 CC=clang PYTHON=python3 LLVM=1 LLVM_IAS=1 LOCALVERSI
     CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
     CROSS_COMPILE_ARM32=arm-linux-gnueabi-
     LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
-    READELF=llvm-readelf STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
+    READELF=llvm-readelf STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ KSU_VERSION_OVERRIDE=33318 KSU_VERSION_TAG_OVERRIDE=v3.4.0-legacy-b933b1f7)
 
 # Do not edit the source defconfig or apply patches/sed during compilation.
 make "${make_args[@]}" vendor/lineage-a52q_defconfig 2>&1 | tee diagnostics/configure.log
 cp out/.config diagnostics/base.config
 make -s "${make_args[@]}" kernelrelease > diagnostics/base-kernelrelease.txt
 if [ "$ROOT_ENABLED" = true ]; then
-    bash scripts/config --file out/.config --enable KSU
+    bash scripts/config --file out/.config --enable KSU --enable KSU_MANUAL_HOOK
 else
     bash scripts/config --file out/.config --disable KSU
 fi

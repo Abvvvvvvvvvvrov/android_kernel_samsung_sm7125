@@ -21,7 +21,7 @@
 #include <linux/mount.h>
 #include <linux/fs.h>
 #ifdef CONFIG_KSU
-#include <linux/sukisu.h>
+#include <linux/kernelsu.h>
 #endif
 #include "internal.h"
 
@@ -606,8 +606,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	ssize_t ret;
 
 #ifdef CONFIG_KSU
-	if (unlikely(ksu_vfs_read_hook))
-		ksu_handle_sys_read(fd, &buf, &count);
+	ksu_handle_sys_read(fd);
 #endif
 	f = fdget_pos(fd);
 	ret = -EBADF;

@@ -3,13 +3,14 @@ name: Build Kernel (Galaxy A52 4G - a52q)
 on:
   workflow_dispatch:
     inputs:
-      sukisu_enabled:
-        description: 'Build vendored SukiSU Ultra builtin (off = diagnostic root-free build)'
+      ksu_enabled:
+        description: 'Build vendored KernelSU-Next legacy builtin (off = diagnostic root-free build)'
         required: true
         type: boolean
         default: true
   push:
     branches:
+      - codex/ksunext-legacy
       - lineage-23.2
       - main
       - master
@@ -29,7 +30,7 @@ jobs:
       run:
         shell: bash
     env:
-      ROOT_ENABLED: ${{ github.event_name == 'push' && 'true' || inputs.sukisu_enabled && 'true' || 'false' }}
+      ROOT_ENABLED: ${{ github.event_name == 'push' && 'true' || inputs.ksu_enabled && 'true' || 'false' }}
       # Exact stock ROM toolchain: r563880c, build 14054515, clang/LLD 21.0.0.
       # https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/531a564ba5426707dee226eccb19f104a7af5a5f
       CLANG_COMMIT: 531a564ba5426707dee226eccb19f104a7af5a5f
@@ -91,7 +92,7 @@ jobs:
           cat > AnyKernel3/anykernel.sh <<'AK3'
           ### AnyKernel3 script for Galaxy A52 4G (a52q)
           properties() { '
-          kernel.string=SukiSU Ultra builtin for Samsung Galaxy A52 4G (a52q)
+          kernel.string=KernelSU-Next legacy builtin for Samsung Galaxy A52 4G (a52q)
           do.devicecheck=1
           do.modules=0
           do.systemless=1
@@ -120,7 +121,7 @@ jobs:
             AnyKernel3/dtbo.img AnyKernel3/Image
           test -s out/arch/arm64/boot/Image.gz
           cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          mode=SukiSU-builtin
+          mode=KernelSU-Next-legacy
           if [ "$ROOT_ENABLED" = false ]; then
             mode=no-root
             sed -i 's/^kernel.string=.*/kernel.string=Diagnostic no-root kernel for Samsung Galaxy A52 4G (a52q)/' AnyKernel3/anykernel.sh

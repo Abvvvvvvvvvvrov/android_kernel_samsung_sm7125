@@ -17,7 +17,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/uaccess.h>
 #ifdef CONFIG_KSU
-#include <linux/sukisu.h>
+#include <linux/kernelsu.h>
 #endif
 
 /*

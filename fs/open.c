@@ -32,7 +32,7 @@
 #include <linux/dnotify.h>
 #include <linux/compat.h>
 #ifdef CONFIG_KSU
-#include <linux/sukisu.h>
+#include <linux/kernelsu.h>
 #endif
 
 #include "internal.h"

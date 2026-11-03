@@ -1,3 +1,30 @@
+#include <linux/ktime.h>
+#include <linux/list.h>
+#include <linux/mutex.h>
+#include <linux/overflow.h>
+#include <linux/poll.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
+#include <linux/wait.h>
+
+#include "infra/event_queue.h"
+
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0)
+#ifndef EPOLLIN
+#define EPOLLIN POLLIN
+#endif
+#ifndef EPOLLRDNORM
+#define EPOLLRDNORM POLLRDNORM
+#endif
+#ifndef EPOLLHUP
+#define EPOLLHUP POLLHUP
+#endif
+#endif
+
+
 struct ksu_event_queue_node {
     struct list_head list;
     struct ksu_event_record_hdr hdr;
@@ -334,6 +361,10 @@ ssize_t ksu_event_queue_read(struct ksu_event_queue *queue, char __user *buf, si
         ret = ksu_event_queue_read_node(queue, buf, count);
         if (ret < 0) {
             if (!copied) {
+                if (ret == -EMSGSIZE) {
+                    copied = 0;
+                    break;
+                }
                 copied = ret;
             }
             break;
@@ -356,9 +387,9 @@ out_unlock:
     return copied;
 }
 
-unsigned __bitwise ksu_event_queue_poll(struct ksu_event_queue *queue, struct file *file, poll_table *wait)
+__poll_t ksu_event_queue_poll(struct ksu_event_queue *queue, struct file *file, poll_table *wait)
 {
-    unsigned __bitwise mask = 0;
+    __poll_t mask = 0;
     unsigned long irq_flags;
 
     poll_wait(file, &queue->read_wait, wait);
