@@ -89,7 +89,12 @@ static KSU_DECL_FSNOTIFY_OPS(ksu_handle_inode_event)
 	return 0;
 }
 
+static void m_free(struct fsnotify_mark *m);
+
 static const struct fsnotify_ops ksu_ops = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+	.free_mark = m_free,
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 	.handle_inode_event = ksu_handle_inode_event,
 #else
